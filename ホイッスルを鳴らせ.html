@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ホイッスルを鳴らせ</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: white;
+            font-family: 'Arial', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            touch-action: manipulation;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        canvas {
+            border: 2px solid #888;
+            background-color: #2a2a2a;
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+            width: 95%;
+            max-width: 600px;
+            height: auto;
+            -webkit-tap-highlight-color: transparent; 
+        }
+        .controls {
+            margin-top: 10px;
+            text-align: center;
+            color: #ccc;
+            line-height: 1.4;
+            font-size: 14px;
+            padding: 0 10px;
+        }
+        .key {
+            border: 1px solid #fff;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: #555;
+            color: #fff;
+            font-weight: bold;
+        }
+        .brand {
+            color: #fca311;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas" width="600" height="500"></canvas>
+    
+    <div class="controls">
+        <p><strong>Fox 40 Classic (調整版)</strong></p>
+        <p>画面タップで <span class="brand">鋭いホイッスル</span> を鳴らせ！</p>
+        <p>音の高さを少し抑えて聞きやすくしました。</p>
+    </div>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+
+        let gameState = "MENU"; 
+        let currentTargetIndex = 0; 
+
+        const bars = [
+            { id: "SHARP",  name: "SHARP (キレ)",  color: "#00ccff", y: 100, pos: 50, dir: 1, speed: 0.8, stopped: false, accuracy: 0 },
+            { id: "STRONG", name: "STRONG (音量)", color: "#ff3333", y: 220, pos: 30, dir: 1, speed: 1.0, stopped: false, accuracy: 0 },
+            { id: "SHORT",  name: "SHORT (短さ)",  color: "#ffff33", y: 340, pos: 70, dir: -1, speed: 0.9, stopped: false, accuracy: 0 }
+        ];
+
+        let audioCtx = null;
+
+        function initAudio() {
+            if (!audioCtx) {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                audioCtx = new AudioContext();
+            }
+        }
+
+        function playComboWhistle() {
+            if (!audioCtx) return;
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+
+            const sharpErr = bars[0].accuracy;
+            const strongErr = bars[1].accuracy;
+            const shortErr = bars[2].accuracy;
+
+            // ▼▼▼ ここで音の高さを調整しています ▼▼▼
+            // 2800 -> 2000 に下げました。
+            // もっと下げたい場合は 1500 などにしてください。
+            const baseFreq = 2000; 
+
+            let attackTime = 0.005 + (Math.min(sharpErr, 30) / 30) * 0.2; 
+            let volume = 0.6 - (Math.min(strongErr, 30) / 30) * 0.5;
+            if (volume < 0.1) volume = 0.1;
+            
+            let duration = 0.1 + (Math.min(shortErr, 30) / 30) * 0.8;
+            let releaseTime = 0.08 + (Math.min(shortErr, 30) / 30) * 0.5;
+
+            const t = audioCtx.currentTime;
+            const gainNode = audioCtx.createGain();
+            gainNode.connect(audioCtx.destination);
+
+            const osc1 = audioCtx.createOscillator();
+            const osc2 = audioCtx.createOscillator();
+            const osc3 = audioCtx.createOscillator(); 
+
+            osc1.type = 'triangle';
+            osc2.type = 'triangle';
+            osc3.type = 'triangle';
+
+            // 比率はそのまま維持（Fox40特有のうねりを残すため）
+            osc1.frequency.value = baseFreq;           
+            osc2.frequency.value = baseFreq * 1.07;    
+            osc3.frequency.value = baseFreq * 1.15;    
+
+            if (strongErr > 15) {
+                osc2.frequency.value = 0; 
+                osc3.frequency.value = 0; 
+                osc1.type = 'sine';
+            }
+
+            gainNode.gain.setValueAtTime(0, t);
+            gainNode.gain.linearRampToValueAtTime(volume, t + attackTime);
+            
+            const stopTime = t + attackTime + duration;
+            gainNode.gain.setValueAtTime(volume, stopTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, stopTime + releaseTime);
+
+            osc1.connect(gainNode);
+            if (strongErr <= 15) {
+                osc2.connect(gainNode);
+                osc3.connect(gainNode);
+            }
+
+            osc1.start(t);
+            osc2.start(t);
+            osc3.start(t);
+
+            const totalDuration = attackTime + duration + releaseTime + 0.2;
+            osc1.stop(t + totalDuration);
+            osc2.stop(t + totalDuration);
+            osc3.stop(t + totalDuration);
+        }
+
+        function resetGame() {
+            currentTargetIndex = 0;
+            bars.forEach(bar => {
+                bar.pos = Math.random() * 100;
+                bar.dir = Math.random() > 0.5 ? 1 : -1;
+                bar.stopped = false;
+                bar.accuracy = 0;
+            });
+            gameState = "PLAY";
+        }
+
+        function handleInput() {
+            initAudio(); 
+
+            if (gameState === "MENU" || gameState === "RESULT") {
+                resetGame();
+            } else if (gameState === "PLAY") {
+                if (currentTargetIndex < 3) {
+                    const currentBar = bars[currentTargetIndex];
+                    currentBar.stopped = true;
+                    currentBar.accuracy = Math.abs(50 - currentBar.pos);
+                    
+                    currentTargetIndex++;
+
+                    if (currentTargetIndex >= 3) {
+                        gameState = "RESULT";
+                        setTimeout(playComboWhistle, 100);
+                    }
+                }
+            }
+        }
+
+        document.addEventListener("keydown", (e) => {
+            if (e.code === "Space" && !e.repeat) handleInput();
+        });
+
+        canvas.addEventListener("touchstart", (e) => {
+            e.preventDefault();
+            handleInput();
+        }, { passive: false });
+
+        canvas.addEventListener("mousedown", (e) => {
+            handleInput();
+        });
+
+        function update() {
+            if (gameState === "PLAY" || gameState === "RESULT") {
+                bars.forEach(bar => {
+                    if (!bar.stopped) {
+                        bar.pos += bar.speed * bar.dir;
+                        if (bar.pos > 100 || bar.pos < 0) {
+                            bar.dir *= -1;
+                        }
+                    }
+                });
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(canvas.width / 2, 50);
+            ctx.lineTo(canvas.width / 2, 450);
+            ctx.stroke();
+
+            bars.forEach((bar, index) => {
+                const barWidth = 400;
+                const barHeight = 50;
+                const startX = (canvas.width - barWidth) / 2;
+                const barScreenY = bar.y;
+
+                if (gameState === "PLAY" && index === currentTargetIndex) {
+                    ctx.strokeStyle = "#fff";
+                    ctx.shadowBlur = 15;
+                    ctx.shadowColor = bar.color;
+                } else {
+                    ctx.strokeStyle = "#555";
+                    ctx.shadowBlur = 0;
+                }
+                
+                ctx.lineWidth = 3;
+                ctx.strokeRect(startX, barScreenY, barWidth, barHeight);
+                ctx.shadowBlur = 0;
+
+                ctx.fillStyle = bar.color;
+                ctx.font = "bold 20px Arial";
+                ctx.textAlign = "left";
+                ctx.fillText(bar.name, startX, barScreenY - 10);
+
+                const markerX = startX + (bar.pos / 100) * barWidth;
+                
+                if (bar.stopped) {
+                    if (bar.accuracy < 3) ctx.fillStyle = "#fff";
+                    else if (bar.accuracy < 10) ctx.fillStyle = bar.color;
+                    else ctx.fillStyle = "#555";
+                } else {
+                    ctx.fillStyle = bar.color;
+                }
+
+                ctx.fillRect(markerX - 10, barScreenY, 20, barHeight);
+
+                ctx.fillStyle = "#fff";
+                ctx.fillRect(startX + barWidth/2 - 1, barScreenY, 2, barHeight);
+
+                if (bar.stopped) {
+                    ctx.textAlign = "right";
+                    ctx.font = "16px Arial";
+                    let grade = "";
+                    if (bar.accuracy < 3) {
+                        grade = "PERFECT";
+                        ctx.fillStyle = "#fff";
+                    } else if (bar.accuracy < 10) {
+                        grade = "GOOD";
+                        ctx.fillStyle = "#ccc";
+                    } else {
+                        grade = "BAD";
+                        ctx.fillStyle = "#555";
+                    }
+                    ctx.fillText(grade, startX + barWidth, barScreenY - 10);
+                }
+            });
+
+            ctx.textAlign = "center";
+            ctx.fillStyle = "white";
+            
+            if (gameState === "MENU") {
+                ctx.font = "30px Arial";
+                ctx.fillText("TAP TO START", canvas.width/2, canvas.height - 50);
+            } else if (gameState === "RESULT") {
+                ctx.font = "30px Arial";
+                const totalError = bars[0].accuracy + bars[1].accuracy + bars[2].accuracy;
+                let msg = "";
+                let subMsg = "";
+
+                if (totalError < 10) {
+                    msg = "Fox 40 MASTER!!";
+                    subMsg = "会場に響き渡る鋭い笛です！";
+                    ctx.fillStyle = "#00ff00";
+                } else if (totalError < 30) {
+                    msg = "NICE WHISTLE";
+                    subMsg = "良い音です";
+                    ctx.fillStyle = "#ffff00";
+                } else {
+                    msg = "WEAK SOUND...";
+                    subMsg = "音がかすれています";
+                    ctx.fillStyle = "#888";
+                }
+
+                ctx.fillText(msg, canvas.width/2, canvas.height - 80);
+                ctx.fillStyle = "#fff";
+                ctx.font = "16px Arial";
+                ctx.fillText(subMsg, canvas.width/2, canvas.height - 45);
+                ctx.fillText("TAP TO RETRY", canvas.width/2, canvas.height - 15);
+            }
+        }
+
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+
+    </script>
+</body>
+</html>
